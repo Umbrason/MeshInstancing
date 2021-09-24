@@ -1,0 +1,13 @@
+{
+  "name": "com.umbrason.meshinstancing",
+  "version": "1.0.0",
+  "displayName": "MeshInstancing",
+  "description": "MeshInstancing contains scripts for drawing many instances of the same mesh by utilizing GPU Instancing",
+  "keywords": [
+    "Rendering"
+  ],
+  "author": {
+    "name": "Umbrason"
+  },
+  "hideInEditor": false
+}
