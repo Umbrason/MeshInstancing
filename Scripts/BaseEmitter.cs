@@ -2,11 +2,36 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
+[ExecuteAlways]
 public abstract class BaseEmitter : MonoBehaviour
 {
     public int seed;
     public List<Batch> batches;
     public abstract void GenerateBatches();
+
+#if UNITY_EDITOR
+    void OnEnable() => GenerateBatches();
+    void OnValidate() => GenerateBatches();
+    private bool isDirty;
+#endif
+
+    public void Update()
+    {
+#if UNITY_EDITOR
+        if (isDirty && !transform.hasChanged)
+        {
+            isDirty = false;
+            GenerateBatches();
+        }
+        if (transform.hasChanged)
+        {
+            isDirty = true;
+            transform.hasChanged = false;
+            return;
+        }
+#endif
+        Draw();
+    }
 
     public void Draw()
     {
@@ -16,7 +41,8 @@ public abstract class BaseEmitter : MonoBehaviour
 
     private void DrawBatch(Batch batch)
     {
-        Graphics.DrawMeshInstanced(batch.mesh, 0, batch.material, batch.transforms.ToArray());
+        if (batch.mesh && batch.material)
+            Graphics.DrawMeshInstanced(batch.mesh, 0, batch.material, batch.transforms.ToArray());
     }
 
     [System.Serializable]
@@ -28,8 +54,8 @@ public abstract class BaseEmitter : MonoBehaviour
 
         public Batch(Mesh mesh = null, Material material = null, IEnumerable<Matrix4x4> transforms = null)
         {
-            this.mesh = null;
-            this.material = null;
+            this.mesh = mesh;
+            this.material = material;
             this.transforms = new List<Matrix4x4>(1000);
             AddRange(transforms);
         }
