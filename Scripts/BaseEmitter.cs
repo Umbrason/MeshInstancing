@@ -11,24 +11,26 @@ public abstract class BaseEmitter : MonoBehaviour
 
 #if UNITY_EDITOR
     void OnEnable() => GenerateBatches();
-    void OnValidate() => GenerateBatches();
+    private float timeSinceLastUpdate;
     private bool isDirty;
 #endif
 
     public void Update()
     {
 #if UNITY_EDITOR
-        if (isDirty && !transform.hasChanged)
+        if (isDirty && !transform.hasChanged && Time.time - timeSinceLastUpdate > Time.deltaTime * 3f)
         {
             isDirty = false;
             GenerateBatches();
         }
         if (transform.hasChanged)
         {
+            timeSinceLastUpdate = Time.time;
             isDirty = true;
             transform.hasChanged = false;
-            return;
         }
+        if (isDirty)
+            return;
 #endif
         Draw();
     }

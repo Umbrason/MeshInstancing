@@ -1,20 +1,33 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using UnityEngine;
+using System.Threading.Tasks;
+using System;
 
 public class MeshEmitter : SingleProfileEmitter
 {
     public Mesh emitterMesh;
     public int meshCount;
+    [Serializable]
+    public enum MeshEmissionType
+    {
+        Volume, Surface
+    }
     public MeshEmissionType emissionType;
+
+    private ConcurrentQueue<Batch> batchQueue = new ConcurrentQueue<Batch>();
+    private Queue<Task> batchGenerationTasks = new Queue<Task>();
 
     public override void GenerateBatches()
     {
         batches.Clear();
         if (!emitterMesh)
             return;
-
-        Random.InitState(seed);
+        while (batchGenerationTasks.Count > 0)
+            batchGenerationTasks.Dequeue().Dispose();
+        batchQueue = new ConcurrentQueue<Batch>();
+        UnityEngine.Random.InitState(seed);
         int counter = meshCount;
         var triangles = new List<Triangle>(emitterMesh.triangles.Length / 3);
         var totalSurfaceArea = 0f;
@@ -32,104 +45,85 @@ public class MeshEmitter : SingleProfileEmitter
         }
         while (counter > 0)
         {
-            var batch = new Batch(mesh, material);
-            for (var i = 0; i < Mathf.Min(counter, 1000); i++)
-            {
-                var TRS = transform.localToWorldMatrix * SampleTRS(Random.state, triangles, totalSurfaceArea);
-                batch.Add(TRS);
-            }
-            batches.Add(batch);
+            var localToWorldMatrix = transform.localToWorldMatrix;
+            int threadSeed = UnityEngine.Random.Range(int.MinValue, int.MaxValue);
+            int amount = Mathf.Min(1000, counter);            
+            Task t = new Task(() => batchQueue.Enqueue(GenerateRandomBatch(threadSeed, amount, localToWorldMatrix, triangles, totalSurfaceArea)));
+            t.Start();
             counter -= 1000;
         }
     }
-
-    private Matrix4x4 SampleTRS(Random.State state, List<Triangle> triangles, float totalSurfaceArea)
+#if UNITY_EDITOR
+    public new void Update()
     {
-        Random.state = state;
+        if (batchQueue.Count > 0 && batchQueue.TryDequeue(out Batch batch))
+            batches.Add(batch);
+        base.Update();
+    }
+#endif
+
+    private Batch GenerateRandomBatch(int seed, int size, Matrix4x4 localToWorldMatrix, List<Triangle> triangles, float totalSurfaceArea)
+    {
+        System.Random random = new System.Random(seed);
+        var batch = new Batch(mesh, material);
+        for (var i = 0; i < size; i++)
+        {
+            var TRS = localToWorldMatrix * SampleRandomTRS(random, triangles, totalSurfaceArea);
+            batch.Add(TRS);
+        }
+        return batch;
+    }
+
+    private Matrix4x4 SampleRandomTRS(System.Random random, List<Triangle> triangles, float totalSurfaceArea)
+    {
         switch (emissionType)
         {
             case MeshEmissionType.Volume:
-                return SampleVolumeTRS();
+                return SampleRandomVolumeTRS(random, triangles);
             case MeshEmissionType.Surface:
             default:
-                return SampleSurfaceTRS(triangles, totalSurfaceArea);
+                return SampleRandomSurfaceTRS(random, triangles, totalSurfaceArea);
         }
     }
 
-    private Matrix4x4 SampleSurfaceTRS(List<Triangle> triangles, float totalSurfaceArea)
+    private Matrix4x4 SampleRandomSurfaceTRS(System.Random random, List<Triangle> triangles, float totalSurfaceArea)
     {
         if (triangles == null || triangles.Count == 0)
             return default;
-        float t = Random.value * totalSurfaceArea;
+        float t = ((float)random.NextDouble()) * totalSurfaceArea;
         int i = 0;
         while (t > triangles[i].surfaceArea)
         {
             t -= triangles[i].surfaceArea;
             i++;
         }
+
         var triangle = triangles[i];
-        var position = triangle.RandomPoint();
-        var scale = baseScale + Vector3.Scale(RandomVector(), randomScaleRange);
-        var rotation = Quaternion.LookRotation(triangle.normal) * Quaternion.Euler(baseRotation + Vector3.Scale(RandomVector(), randomRotationRange));
-        return Matrix4x4.TRS(position, rotation, scale);
+        var TRS = triangle.RandomTRS(random);
+        return ApplyBasePosAndRandomRotScale(random, TRS);
     }
 
-    private Vector3 RandomVector()
+    private Matrix4x4 SampleRandomVolumeTRS(System.Random random, List<Triangle> triangles)
     {
-        return new Vector3(Random.value, Random.value, Random.value);
-    }
-
-    private Matrix4x4 SampleVolumeTRS()
-    {
-        throw new System.NotImplementedException();
-    }
-
-    private struct EmitterSurfaceData
-    {
-        List<Triangle> triangles;
-    }
-
-    private struct Triangle
-    {
-        public float surfaceArea;
-        public Vector3 normal;
-        public Vector3 A, B, C;
-        public Triangle(Vector3 A, Vector3 B, Vector3 C)
+        var min = emitterMesh.bounds.min;
+        var delta = emitterMesh.bounds.max - emitterMesh.bounds.min;
+        var p = Vector3.zero;
+        int attempts = 0;
+        do
         {
-            this.A = A;
-            this.B = B;
-            this.C = C;
-            this.surfaceArea = (B - A).magnitude * (B - C).magnitude / 2;
-            this.normal = Vector3.Cross(B - A, C - A);
+            p = Vector3.Scale(Utility.RandomVector(random), delta) + min;
+            attempts++;
         }
-        public Triangle(Vector3 A, Vector3 B, Vector3 C, Vector3 NA, Vector3 NB, Vector3 NC)
-        {
-            this.A = A;
-            this.B = B;
-            this.C = C;
-            this.surfaceArea = (B - A).magnitude * (B - C).magnitude / 2;
-            this.normal = (NA + NB + NC).normalized;
-        }
-
-        public Vector3 RandomPoint()
-        {
-            Vector3 BA = B - A;
-            Vector3 CA = C - A;
-            var t1 = Random.value;
-            var t2 = Random.value;
-            if (t1 + t2 >= 1)
-            {
-                t1 = 1 - t1;
-                t2 = 1 - t2;
-            }
-            Vector3 point = BA * t1 + CA * t2;
-            return point + A;
-        }
+        while (Utility.MeshSweepTest(triangles, p, Vector3.up) && attempts < 100);
+        var scale = baseScale + Vector3.Scale(Utility.RandomVector(random), randomScaleRange);
+        var normal = Vector3.zero;
+        foreach (var triangle in triangles)
+            normal += triangle.surfaceNormal / ((triangle.A + triangle.B + triangle.C) / 3 - p).sqrMagnitude;
+        normal.Normalize();
+        var rotation = Quaternion.LookRotation(normal) * Quaternion.Euler(baseRotation) * Quaternion.Euler(Vector3.Scale(Utility.RandomVector(random) * 2 - Vector3.one, randomRotationRange));
+        return Matrix4x4.TRS(p, rotation, scale);
     }
 
-    [System.Serializable]
-    public enum MeshEmissionType
-    {
-        Volume, Surface
-    }
+
+
 }
